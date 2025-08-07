@@ -18,7 +18,7 @@ const App = () => {
   const { callStatus } = useContext(WebRTCContext);
 
   return (
-    <div className="bg-[url('./src/assets/bgImage.svg')] bg-contain">
+    <div className="bg-[url('/bgImage.svg')] bg-contain">
       {/* The Toaster component is responsible for displaying all toast notifications. */}
       <Toaster />
 

@@ -184,6 +184,10 @@ app.use("/api/messages", messageRouter);
 app.use("/api/ai", aiRouter);
 app.use("/api/conversations", conversationRouter);
 
+// Server ko Vercel ke liye export karo.
+// Yeh line Vercel ko batati hai ki is file ko run karna hai.
+export default httpServer;
+
 // 📝 Define the port from environment variables or default to 5000.
 const PORT = process.env.PORT || 5000;
 // 📝 Start the HTTP server and listen on the specified port.
