@@ -1,0 +1,14 @@
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&display=swap");
+
+/* Import Tailwind CSS framework */
+@import "tailwindcss";
+
+/* Apply "Outfit" font family globally to all elements */
+* {
+  font-family: "Outfit", sans-serif;
+}
+
+/* Hide the vertical and horizontal scrollbars in web browsers using WebKit engine */
+::-webkit-scrollbar {
+  display: none;
+}
