@@ -1,3 +1,10 @@
+/**
+ * @file ChatContainer.jsx
+ * @description This component renders the main chat interface, including the header,
+ * message list, and message input form. It handles message sending, typing indicators,
+ * and integration with various contexts for state management.
+ */
+
 import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { format, isToday, isYesterday, formatDistanceToNow } from "date-fns";
 import toast from "react-hot-toast";
@@ -14,8 +21,10 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import TextareaAutosize from "react-textarea-autosize";
 
+// --- Helper Functions ---
+
 /**
- * Generates a human-readable date label (e.g., "Today", "Yesterday", "Jul 22, 2024").
+ * Generates a user-friendly date label (e.g., "Today", "Yesterday", "Aug 9, 2025").
  * @param {string | Date} date - The date to format.
  * @returns {string} The formatted date label.
  */
@@ -33,7 +42,7 @@ const getDateLabel = (date) => {
 };
 
 /**
- * Formats a date into a time string (e.g., "10:30 AM").
+ * Formats a date into a time string (e.g., "9:30 PM").
  * @param {string | Date} date - The date to format.
  * @returns {string} The formatted time label.
  */
@@ -41,8 +50,8 @@ const getTimeLabel = (date) => format(new Date(date), "h:mm a");
 
 /**
  * Groups an array of messages by date, inserting date separator objects.
- * @param {Array<object>} messages - The array of message objects.
- * @returns {Array<object>} A new array with messages and date separators.
+ * @param {Array<Object>} messages - The array of message objects.
+ * @returns {Array<Object>} An array containing messages and date separators.
  */
 const groupMessagesByDate = (messages) => {
   if (!messages) return [];
@@ -60,9 +69,9 @@ const groupMessagesByDate = (messages) => {
 };
 
 /**
- * Formats a date into a "last seen" status string.
+ * Formats a user's last seen timestamp into a human-readable string.
  * @param {string | Date} date - The last seen date.
- * @returns {string | null} The formatted status or null if no date is provided.
+ * @returns {string | null} The formatted string or null if no date is provided.
  */
 const formatLastSeen = (date) => {
   if (!date) return null;
@@ -73,10 +82,10 @@ const formatLastSeen = (date) => {
 };
 
 /**
- * The main component for displaying and interacting with a chat conversation.
+ * The main component for the chat view.
  */
 const ChatContainer = () => {
-  // Destructures state and functions from the various contexts.
+  // --- Contexts ---
   const {
     messages,
     setMessages,
@@ -90,25 +99,24 @@ const ChatContainer = () => {
   const { authUser, onlineUsers, socket } = useContext(AuthContext);
   const { callUser } = useContext(WebRTCContext);
 
-  // State for the message input field.
-  const [text, setText] = useState("");
-  // State for the image preview before sending.
-  const [previewImage, setPreviewImage] = useState(null);
-  // State to control the visibility of the emoji picker.
-  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
-  // State to control the visibility of the user profile modal.
-  const [showProfileModal, setShowProfileModal] = useState(false);
-  // State to control the visibility of the group info modal.
-  const [showGroupInfoModal, setShowGroupInfoModal] = useState(false);
+  // --- State Management ---
+  const [text, setText] = useState(""); // Current text in the input field
+  const [previewImage, setPreviewImage] = useState(null); // Base64 preview of image to be sent
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false); // Controls emoji picker visibility
+  const [showProfileModal, setShowProfileModal] = useState(false); // Controls user profile modal visibility
+  const [showGroupInfoModal, setShowGroupInfoModal] = useState(false); // Controls group info modal visibility
 
-  // Refs for various DOM elements.
-  const scrollEndRef = useRef(null); // For auto-scrolling to the bottom of the chat.
-  const inputRef = useRef(null); // For focusing the text input.
-  const typingTimeoutRef = useRef(null); // For managing the "stop typing" event.
-  const emojiPickerRef = useRef(null); // For detecting clicks outside the emoji picker.
+  // --- Refs ---
+  const scrollEndRef = useRef(null); // Ref to an element at the end of the message list for auto-scrolling
+  const inputRef = useRef(null); // Ref to the message input textarea
+  const typingTimeoutRef = useRef(null); // Ref to manage the timeout for "stopTyping" event
+  const emojiPickerRef = useRef(null); // Ref to the emoji picker container for detecting outside clicks
 
-  // Memoized values for performance optimization.
+  // --- Memoized Values ---
+  // Determines if the current chat is a group chat.
   const isGroup = selectedConversation?.isGroupChat;
+
+  // Memoizes the chat partner object to prevent recalculation on every render.
   const chatPartner = useMemo(() => {
     if (!selectedConversation || isGroup) return null;
     return selectedConversation.participants.find(
@@ -116,8 +124,10 @@ const ChatContainer = () => {
     );
   }, [selectedConversation, isGroup, authUser]);
 
+  // Determines if the chat partner is the AI bot.
   const isBot = chatPartner?.email === "groq@bot.com";
 
+  // Calculates the number of online members in a group chat.
   const onlineMembersCount = useMemo(() => {
     if (!isGroup) return 0;
     return selectedConversation.participants.filter((participant) =>
@@ -125,6 +135,7 @@ const ChatContainer = () => {
     ).length;
   }, [selectedConversation, onlineUsers, isGroup]);
 
+  // --- Computed Chat Properties ---
   const chatName = isGroup
     ? selectedConversation?.groupName
     : chatPartner?.fullName;
@@ -132,7 +143,8 @@ const ChatContainer = () => {
     ? selectedConversation?.groupIcon || assets.group_icon
     : chatPartner?.profilePic || assets.avatar_icon;
 
-  // Effect to handle clicks outside the emoji picker to close it.
+  // --- Effects ---
+  // Effect to close the emoji picker when clicking outside of it.
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (
@@ -146,37 +158,52 @@ const ChatContainer = () => {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [emojiPickerRef]);
 
-  // Effect to fetch messages when a new conversation is selected.
+  // Effect to fetch messages when the selected conversation changes.
   useEffect(() => {
     if (selectedConversation) getMessages(selectedConversation._id);
   }, [selectedConversation, getMessages]);
 
-  // Effect to scroll to the bottom of the chat when new messages arrive or typing status changes.
+  // Effect to automatically scroll to the latest message.
   useEffect(() => {
     if (scrollEndRef.current) {
       scrollEndRef.current.scrollIntoView({ behavior: "auto" });
     }
   }, [messages, isTyping, isBotThinking]);
 
-  // Effect to handle sending "typing" and "stop typing" socket events.
+  /**
+   * Effect to manage the "typing" indicator.
+   * This adds an input event listener to the textarea to emit "typing" and "stopTyping" socket events.
+   * It's optimized to run only when the conversation changes, not on every keystroke, preventing re-renders.
+   */
   useEffect(() => {
-    if (!socket || !selectedConversation || isBot || !text.trim()) return;
+    if (!socket || !selectedConversation || isBot) return;
 
-    const typingData = { conversationId: selectedConversation._id };
-    socket.emit("typing", typingData);
+    const handleInput = () => {
+      const typingData = { conversationId: selectedConversation._id };
+      socket.emit("typing", typingData);
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = setTimeout(() => {
+        socket.emit("stopTyping", typingData);
+      }, 1000);
+    };
 
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = setTimeout(() => {
-      socket.emit("stopTyping", typingData);
-    }, 1000);
+    const inputElement = inputRef.current;
+    if (inputElement) {
+      inputElement.addEventListener("input", handleInput);
+    }
 
     return () => {
+      if (inputElement) {
+        inputElement.removeEventListener("input", handleInput);
+      }
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     };
-  }, [text, socket, selectedConversation, isBot]);
+  }, [socket, selectedConversation, isBot]);
 
-  // Memoize the grouped messages to prevent re-computation on every render.
+  // Memoizes the grouped messages to avoid re-computation on every render.
   const grouped = useMemo(() => groupMessagesByDate(messages), [messages]);
+
+  // --- Event Handlers ---
 
   /**
    * Copies the given text to the clipboard and shows a toast notification.
@@ -191,31 +218,32 @@ const ChatContainer = () => {
 
   /**
    * Handles sending a message (text and/or image).
-   * It performs an optimistic update to the UI for a faster user experience.
-   * @param {React.FormEvent} event - The form submission event.
+   * It creates an optimistic message for instant UI update and then calls the API.
+   * @param {React.FormEvent<HTMLFormElement>} event - The form submission event.
    */
   const handleSend = async (event) => {
-    event?.preventDefault?.();
+    event?.preventDefault?.(); // Use optional chaining for events not from forms.
     if (!text.trim() && !previewImage) return;
 
-    // Clear any pending "stop typing" timeouts.
+    // Stop the "typing" indicator immediately on send.
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     if (socket && selectedConversation)
       socket.emit("stopTyping", { conversationId: selectedConversation._id });
 
+    // Create a temporary ID for the optimistic message.
     const tempId = `temp_${Date.now()}`;
     const payload = {};
     if (text.trim()) payload.text = text.trim();
     if (previewImage) payload.image = previewImage;
 
-    // Create a temporary message object for the optimistic update.
+    // Create an optimistic message to display in the UI instantly.
     const optimisticMessage = {
       _id: tempId,
       senderId: authUser,
       text: payload.text || "",
       image: payload.image || null,
       createdAt: new Date().toISOString(),
-      isOptimistic: true,
+      isOptimistic: true, // Flag to identify this message, can be used for styling (e.g., pending icon).
       conversationId: selectedConversation._id,
     };
 
@@ -223,13 +251,13 @@ const ChatContainer = () => {
     setText("");
     setPreviewImage(null);
 
-    // Send the actual message to the server.
+    // Send the actual message and update it once the server responds.
     await sendMessage(payload, tempId);
   };
 
   /**
-   * Handles the Enter key press to send a message, unless Shift is also pressed.
-   * @param {React.KeyboardEvent} event - The keydown event.
+   * Handles the 'Enter' key press to send a message, unless 'Shift' is also pressed.
+   * @param {React.KeyboardEvent<HTMLTextAreaElement>} event - The keydown event.
    */
   const handleKeyDown = (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -239,8 +267,8 @@ const ChatContainer = () => {
   };
 
   /**
-   * Handles the selection of an image file, validates it, and sets the preview.
-   * @param {React.ChangeEvent<HTMLInputElement>} event - The file input change event.
+   * Handles image selection from the file input, validates it, and sets the preview.
+   * @param {React.ChangeEvent<HTMLInputElement>} event - The change event from the file input.
    */
   const handleImageChange = async (event) => {
     const file = event.target.files?.[0];
@@ -250,22 +278,34 @@ const ChatContainer = () => {
       return;
     }
     const reader = new FileReader();
-    reader.onloadend = () => setPreviewImage(reader.result);
+    reader.onloadend = () => {
+      setPreviewImage(reader.result);
+      inputRef.current.focus();
+    };
     reader.readAsDataURL(file);
   };
 
-  const removePreviewImage = () => setPreviewImage(null);
+  /**
+   * Removes the selected image preview.
+   */
+  const removePreviewImage = () => {
+    setPreviewImage(null);
+    inputRef.current.focus();
+  };
 
   /**
    * Appends the selected emoji to the text input.
-   * @param {object} emojiObject - The emoji data from the picker.
+   * @param {Object} emojiObject - The object containing emoji data from the picker.
    */
   const handleEmojiClick = (emojiObject) => {
     setText((previousInput) => previousInput + emojiObject.emoji);
     setShowEmojiPicker(false);
+    inputRef.current.focus();
   };
 
-  // Render a placeholder if no conversation is selected.
+  // --- Render Logic ---
+
+  // Render a welcome/placeholder screen if no conversation is selected.
   if (!selectedConversation) {
     return (
       <div className="flex flex-col justify-center items-center h-full gap-4 text-center bg-slate-800">
@@ -277,10 +317,12 @@ const ChatContainer = () => {
     );
   }
 
+  // Check if the chat partner is currently online.
   const isOnline = onlineUsers.includes(chatPartner?._id);
 
   return (
     <>
+      {/* --- Modals --- */}
       {showProfileModal && chatPartner && (
         <UserProfileModal
           user={chatPartner}
@@ -292,8 +334,9 @@ const ChatContainer = () => {
       )}
 
       <div className="h-full w-full bg-slate-800 flex flex-col rounded-3xl shadow-2xl overflow-hidden">
-        {/* Chat Header */}
-        <div className="sticky top-0 z-10 backdrop-blur-lg bg-slate-900/50 flex items-center gap-4 p-4 border-b border-slate-700 shadow-sm">
+        {/* --- Chat Header --- */}
+        <div className="flex-shrink-0 sticky top-0 z-10 backdrop-blur-lg bg-slate-900/50 flex items-center gap-4 p-4 border-b border-slate-700 shadow-sm">
+          {/* User/Group Info section */}
           <div
             className="flex items-center gap-4 cursor-pointer"
             onClick={() =>
@@ -306,6 +349,7 @@ const ChatContainer = () => {
                 className="w-10 h-10 rounded-full border-2 border-indigo-500 shadow-md object-cover"
                 alt={chatName}
               />
+              {/* Online status indicator */}
               {!isGroup && isOnline && (
                 <span className="absolute bottom-0 right-0 block h-2.5 w-2.5 rounded-full bg-green-500 ring-2 ring-slate-800"></span>
               )}
@@ -314,6 +358,7 @@ const ChatContainer = () => {
               <div className="font-semibold text-lg tracking-wide truncate">
                 {chatName}
               </div>
+              {/* Sub-header text: online status, typing indicator, or member count */}
               <div className="text-xs text-slate-400 h-4 truncate">
                 {isGroup ? (
                   `${onlineMembersCount} of ${selectedConversation.participants.length} members online`
@@ -332,6 +377,7 @@ const ChatContainer = () => {
             </div>
           </div>
           <div className="flex-grow" />
+          {/* Action buttons: Voice and Video Call */}
           <div className="flex items-center gap-2 text-slate-200">
             {!isGroup && !isBot && (
               <>
@@ -360,6 +406,7 @@ const ChatContainer = () => {
               </>
             )}
           </div>
+          {/* Back button for mobile view */}
           <button
             className="hover:bg-slate-700 p-2 rounded-full transition md:hidden"
             onClick={() => setSelectedConversation(null)}
@@ -368,9 +415,10 @@ const ChatContainer = () => {
           </button>
         </div>
 
-        {/* Messages Area */}
+        {/* --- Message List --- */}
         <div className="flex-1 px-4 py-6 overflow-y-auto bg-slate-700">
           {grouped.map((item, index) => {
+            // Render a date separator
             if (item.type === "date") {
               return (
                 <div key={`date-${index}`} className="flex justify-center my-4">
@@ -380,6 +428,7 @@ const ChatContainer = () => {
                 </div>
               );
             }
+            // Render a message
             const isMine = item.senderId._id === authUser._id;
             return (
               <div
@@ -388,6 +437,7 @@ const ChatContainer = () => {
                   isMine ? "justify-end" : "justify-start"
                 }`}
               >
+                {/* Copy button for own messages (appears on hover) */}
                 {isMine && item.text && !item.isStreaming && (
                   <button
                     onClick={() => handleCopyText(item.text)}
@@ -405,6 +455,7 @@ const ChatContainer = () => {
                     isMine ? "justify-end" : "justify-start"
                   }`}
                 >
+                  {/* Sender's avatar for group/bot messages */}
                   {!isMine && (isGroup || isBot) && (
                     <img
                       src={item.senderId.profilePic || assets.avatar_icon}
@@ -417,11 +468,13 @@ const ChatContainer = () => {
                       isMine ? "items-end" : "items-start"
                     }`}
                   >
+                    {/* Sender's name in group chats */}
                     {!isMine && isGroup && (
                       <span className="text-xs text-indigo-300 ml-2">
                         {item.senderId.fullName}
                       </span>
                     )}
+                    {/* Message bubble */}
                     <div
                       className={
                         "max-w-sm min-w-0 flex flex-col shadow-sm px-3 py-2 min-h-[42px] " +
@@ -430,6 +483,7 @@ const ChatContainer = () => {
                           : "bg-slate-600 text-slate-200 rounded-2xl rounded-bl-none")
                       }
                     >
+                      {/* Image content */}
                       {item.image && (
                         <img
                           src={item.image}
@@ -437,18 +491,22 @@ const ChatContainer = () => {
                           className="max-w-[250px] rounded-lg mb-1 object-cover"
                         />
                       )}
+                      {/* Text content */}
                       {item.text &&
                         (item.senderId.email === "groq@bot.com" ? (
+                          // Render Markdown for bot messages
                           <ReactMarkdown components={{ code: CodeBlock }}>
                             {item.text}
                           </ReactMarkdown>
                         ) : (
+                          // Render plain text with link detection for user messages
                           <div className="whitespace-pre-line break-words">
                             <Linkify componentDecorator={linkDecorator}>
                               {item.text}
                             </Linkify>
                           </div>
                         ))}
+                      {/* Timestamp */}
                       {!item.isStreaming && (
                         <span className="text-[10px] opacity-80 mt-1 self-end">
                           {getTimeLabel(item.createdAt || Date.now())}
@@ -457,6 +515,7 @@ const ChatContainer = () => {
                     </div>
                   </div>
                 </div>
+                {/* Copy button for others' messages (appears on hover) */}
                 {!isMine && item.text && !item.isStreaming && (
                   <button
                     onClick={() => handleCopyText(item.text)}
@@ -472,6 +531,7 @@ const ChatContainer = () => {
               </div>
             );
           })}
+          {/* "Typing..." indicator */}
           {isTyping && !isGroup && (
             <div className="flex mb-2 justify-start">
               <div className="flex max-w-[75%] items-end relative">
@@ -487,6 +547,7 @@ const ChatContainer = () => {
               </div>
             </div>
           )}
+          {/* "Bot is thinking..." indicator */}
           {isBotThinking && (
             <div className="group flex items-end gap-2 mb-2 justify-start">
               <div className="flex max-w-[75%] items-end relative gap-2">
@@ -512,11 +573,13 @@ const ChatContainer = () => {
               </div>
             </div>
           )}
+          {/* Anchor for auto-scrolling */}
           <div ref={scrollEndRef} />
         </div>
 
-        {/* Message Input Form */}
-        <div className="relative">
+        {/* --- Message Input Form --- */}
+        <div className="relative flex-shrink-0">
+          {/* Emoji Picker */}
           <div
             ref={emojiPickerRef}
             className="absolute bottom-full left-4 mb-2 z-20"
@@ -539,6 +602,7 @@ const ChatContainer = () => {
             className="bg-slate-900/50 px-4 py-4 flex items-start gap-3 border-t border-slate-700"
           >
             <div className="flex-1 flex flex-col gap-2">
+              {/* Image Preview */}
               {previewImage && (
                 <div className="flex items-center bg-slate-800 rounded-lg px-3 py-2 mb-2">
                   <img
@@ -555,7 +619,9 @@ const ChatContainer = () => {
                   </button>
                 </div>
               )}
+              {/* Main input bar */}
               <div className="flex items-center bg-slate-800 rounded-2xl shadow">
+                {/* Emoji button */}
                 <button
                   type="button"
                   onClick={() => setShowEmojiPicker(!showEmojiPicker)}
@@ -576,6 +642,7 @@ const ChatContainer = () => {
                     />
                   </svg>
                 </button>
+                {/* Textarea for message input */}
                 <TextareaAutosize
                   ref={inputRef}
                   value={text}
@@ -586,6 +653,7 @@ const ChatContainer = () => {
                   maxRows={5}
                   autoFocus
                 />
+                {/* Hidden file input for images */}
                 <input
                   type="file"
                   id="image"
@@ -593,11 +661,13 @@ const ChatContainer = () => {
                   hidden
                   onChange={handleImageChange}
                 />
+                {/* Image attachment button */}
                 <label htmlFor="image" className="cursor-pointer mx-2">
                   <img src={assets.gallery_icon} alt="Attach" className="w-6" />
                 </label>
               </div>
             </div>
+            {/* Send button */}
             <button
               type="submit"
               className="bg-indigo-600 hover:bg-indigo-700 transition p-3 rounded-full disabled:opacity-40 self-end"
@@ -613,11 +683,7 @@ const ChatContainer = () => {
 };
 
 /**
- * A custom component to render links found by Linkify.
- * @param {string} decoratedHref - The URL of the link.
- * @param {string} decoratedText - The text content of the link.
- * @param {string} key - A unique key for the element.
- * @returns {React.ReactElement} An anchor tag.
+ * A custom component decorator for react-linkify to style links.
  */
 const linkDecorator = (decoratedHref, decoratedText, key) => (
   <a
@@ -632,9 +698,8 @@ const linkDecorator = (decoratedHref, decoratedText, key) => (
 );
 
 /**
- * A custom component to render code blocks for ReactMarkdown.
- * @param {object} props - Props passed by ReactMarkdown.
- * @returns {React.ReactElement} A syntax-highlighted code block.
+ * A custom component for rendering code blocks in Markdown with syntax highlighting.
+ * It handles both inline code and fenced code blocks.
  */
 const CodeBlock = ({ node, inline, className, children, ...props }) => {
   const match = /language-(\w+)/.exec(className || "");

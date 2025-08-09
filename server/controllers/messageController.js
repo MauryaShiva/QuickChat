@@ -87,6 +87,7 @@ export const sendMessage = async (request, response) => {
         senderId,
         conversationId,
         text,
+        image: image || null, // ✅ CHANGE: User's message now saves the image as well.
         seenBy: [senderId],
       });
       const populatedUserMessage = await Message.findById(
@@ -102,6 +103,30 @@ export const sendMessage = async (request, response) => {
       response
         .status(200)
         .json({ success: true, message: "Bot processing started." });
+
+      // Check if the user has sent an image but no accompanying text.
+      // This is a special case to handle gracefully since the AI cannot process images.
+      if (image && !text) {
+        const botResponseText =
+          "I see that you've sent an image. While my current capabilities don't include image analysis, if you can describe it for me or ask your question in text, I'll do my best to assist you.";
+        const groqMessage = await Message.create({
+          senderId: groqBotUser._id,
+          conversationId,
+          text: botResponseText,
+          seenBy: [groqBotUser._id],
+        });
+        const populatedGroqMessage = await Message.findById(
+          groqMessage._id
+        ).populate("senderId", "-password");
+        io.to(conversationId).emit("newMessage", populatedGroqMessage);
+
+        conversation.lastMessage = {
+          text: "Groq AI has responded.",
+          sender: groqBotUser._id,
+        };
+        await conversation.save();
+        return; // Exit the function early.
+      }
 
       // --- AI Context and Memory ---
       // Fetch the last 10 messages to provide context (memory) for the AI.

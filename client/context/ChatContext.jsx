@@ -25,6 +25,14 @@ export const ChatProvider = ({ children }) => {
   // 📌 Indicates if the AI bot is processing a request to show a thinking indicator.
   const [isBotThinking, setIsBotThinking] = useState(false);
 
+  /**
+   * Manages the loading state for the initial fetch of conversations.
+   * It's initialized to 'true' so that UI components (like the Sidebar)
+   * can show a loading indicator immediately on app start, preventing a
+   * flicker or an incorrect "no conversations" message.
+   */
+  const [isConversationsLoading, setIsConversationsLoading] = useState(true);
+
   // 📝 Refs for DOM elements and other values that don't trigger re-renders.
   const notificationSound = useRef(new Audio("/notification.mp3"));
   const botRequestStartTime = useRef(null);
@@ -42,6 +50,7 @@ export const ChatProvider = ({ children }) => {
    */
   const getConversations = useCallback(async () => {
     if (!axios || !authUser) return;
+    setIsConversationsLoading(true); // Loading shuru karo
     try {
       const { data } = await axios.get("/api/conversations");
       if (data.success) {
@@ -49,6 +58,8 @@ export const ChatProvider = ({ children }) => {
       }
     } catch (error) {
       console.error("Error in getConversations:", error.message);
+    } finally {
+      setIsConversationsLoading(false); // Hamesha loading khatam karo
     }
   }, [axios, authUser]);
 
@@ -322,6 +333,10 @@ export const ChatProvider = ({ children }) => {
 
     // 📌 Handles incoming new messages.
     const handleNewMessage = (newMessage) => {
+      // 📌 When any new message arrives from the bot, hide the "is thinking..." indicator.
+      if (newMessage.senderId.email === "groq@bot.com") {
+        setIsBotThinking(false);
+      }
       const isMyOwnMessage = newMessage.senderId._id === authUser._id;
       const currentConversationId = selectedConversationRef.current?._id;
 
@@ -536,6 +551,7 @@ export const ChatProvider = ({ children }) => {
     isTyping,
     setIsTyping,
     isBotThinking,
+    isConversationsLoading,
     sendMessage,
     getMessages,
     createConversation,
