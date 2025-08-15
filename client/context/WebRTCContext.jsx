@@ -14,12 +14,17 @@ import { ChatContext } from "./ChatContext";
 // Creates a new context for WebRTC-related state and functions.
 export const WebRTCContext = createContext();
 
-// Configuration for ICE (Interactive Connectivity Establishment) servers.
-// These STUN servers are used to discover the public IP address of a peer.
+// 🛡️ UPDATED: Added a free TURN server for reliability on difficult networks.
+// The `turns:` entry uses TLS over port 443, which is excellent for bypassing firewalls.
 const ICE_SERVERS = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
+    {
+      urls: ["turn:openrelay.metered.ca:80", "turns:openrelay.metered.ca:443"],
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
   ],
 };
 
@@ -137,6 +142,30 @@ export const WebRTCProvider = ({ children }) => {
     }
   }, []);
 
+  // ✨ NEW: Function to handle automatic reconnection on network drops.
+  const reconnectCall = useCallback(async () => {
+    if (!peerConnectionRef.current) return;
+
+    try {
+      // Create a new offer with the iceRestart flag to renegotiate the connection.
+      const offer = await peerConnectionRef.current.createOffer({
+        iceRestart: true,
+      });
+      await peerConnectionRef.current.setLocalDescription(offer);
+
+      const remoteUserId =
+        callStateRef.current.callData?.to?._id ||
+        callStateRef.current.callData?.from;
+      if (remoteUserId && socket) {
+        // Send the renegotiation offer to the other user.
+        socket.emit("renegotiate-call", { to: remoteUserId, offer });
+      }
+    } catch (error) {
+      console.error("ICE Restart failed:", error);
+      cleanupCall(); // End the call if reconnection fails.
+    }
+  }, [socket, cleanupCall]);
+
   /**
    * Creates and configures a new RTCPeerConnection object.
    * @param {string} remoteUserId - The ID of the user to connect with.
@@ -161,19 +190,22 @@ export const WebRTCProvider = ({ children }) => {
         setRemoteStream(event.streams[0]);
       };
 
-      // Event handler for changes in the ICE connection state.
-      peerConnection.oniceconnectionstatechange = () => {
-        if (
-          peerConnectionRef.current?.iceConnectionState === "disconnected" ||
-          peerConnectionRef.current?.iceConnectionState === "closed"
-        ) {
-          toast.error("Call disconnected.");
+      // ✨ UPDATED: Replaced `oniceconnectionstatechange` with the more modern and reliable `onconnectionstatechange`.
+      // This provides a more accurate status of the connection.
+      peerConnection.onconnectionstatechange = () => {
+        const state = peerConnectionRef.current?.connectionState;
+        if (state === "disconnected") {
+          toast.error("Connection lost. Attempting to reconnect...");
+          reconnectCall(); // Trigger automatic reconnection.
+        }
+        if (state === "failed" || state === "closed") {
           cleanupCall();
         }
       };
+
       return peerConnection;
     },
-    [socket, cleanupCall]
+    [socket, cleanupCall, reconnectCall]
   );
 
   /**
@@ -249,7 +281,10 @@ export const WebRTCProvider = ({ children }) => {
       .getTracks()
       .forEach((track) => peerConnectionRef.current.addTrack(track, stream));
     try {
-      await peerConnectionRef.current.setRemoteDescription(callData.offer);
+      // ✨ UPDATED: It's best practice to wrap the description in a new RTCSessionDescription object.
+      await peerConnectionRef.current.setRemoteDescription(
+        new RTCSessionDescription(callData.offer)
+      );
       const answer = await peerConnectionRef.current.createAnswer();
       await peerConnectionRef.current.setLocalDescription(answer);
       setCallStatus("connected");
@@ -313,7 +348,10 @@ export const WebRTCProvider = ({ children }) => {
         callTimeoutRef.current = null;
       }
       if (peerConnectionRef.current) {
-        await peerConnectionRef.current.setRemoteDescription(data.answer);
+        // ✨ UPDATED: Wrap the answer in a new RTCSessionDescription object for consistency.
+        await peerConnectionRef.current.setRemoteDescription(
+          new RTCSessionDescription(data.answer)
+        );
         setCallStatus("connected");
       }
     };
@@ -345,6 +383,26 @@ export const WebRTCProvider = ({ children }) => {
       }
     };
 
+    // ✨ NEW: Handlers for the ICE Restart (renegotiation) process.
+    // Remember to add corresponding `renegotiate-call` and `renegotiate-answer` events to your backend server!
+    const handleRenegotiateCall = async (data) => {
+      if (peerConnectionRef.current && data.offer) {
+        await peerConnectionRef.current.setRemoteDescription(
+          new RTCSessionDescription(data.offer)
+        );
+        const answer = await peerConnectionRef.current.createAnswer();
+        await peerConnectionRef.current.setLocalDescription(answer);
+        socket.emit("renegotiate-answer", { to: data.from, answer });
+      }
+    };
+    const handleRenegotiateAnswer = async (data) => {
+      if (peerConnectionRef.current && data.answer) {
+        await peerConnectionRef.current.setRemoteDescription(
+          new RTCSessionDescription(data.answer)
+        );
+      }
+    };
+
     // Register all socket event listeners.
     socket.on("call-made", handleCallMade);
     socket.on("answer-made", handleAnswerMade);
@@ -353,6 +411,8 @@ export const WebRTCProvider = ({ children }) => {
     socket.on("call-ended", cleanupCall);
     socket.on("call-missed", handleMissedCall);
     socket.on("user-disconnected", handleUserDisconnected);
+    socket.on("renegotiate-call", handleRenegotiateCall);
+    socket.on("renegotiate-answer", handleRenegotiateAnswer);
 
     // Cleanup function to remove listeners on unmount.
     return () => {
@@ -363,6 +423,8 @@ export const WebRTCProvider = ({ children }) => {
       socket.off("call-ended", cleanupCall);
       socket.off("call-missed", handleMissedCall);
       socket.off("user-disconnected", handleUserDisconnected);
+      socket.off("renegotiate-call", handleRenegotiateCall);
+      socket.off("renegotiate-answer", handleRenegotiateAnswer);
     };
   }, [socket, cleanupCall]);
 
