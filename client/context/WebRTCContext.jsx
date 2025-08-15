@@ -14,13 +14,17 @@ import { ChatContext } from "./ChatContext";
 // Creates a new context for WebRTC-related state and functions.
 export const WebRTCContext = createContext();
 
-// A robust ICE configuration for better connectivity.
+// Configuration for ICE (Interactive Connectivity Establishment) servers.
+// These STUN servers are used to discover the public IP address of a peer.
 const ICE_SERVERS = {
   iceServers: [
+    // Yeh STUN servers direct connection ke liye hain.
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
+
+    // ✅ NEW: Yeh free TURN server mushkil networks par audio/video ko relay karta hai.
     {
-      urls: ["turn:openrelay.metered.ca:80", "turns:openrelay.metered.ca:443"],
+      urls: "turn:openrelay.metered.ca:80",
       username: "openrelayproject",
       credential: "openrelayproject",
     },
@@ -33,32 +37,47 @@ const ICE_SERVERS = {
  * @param {{ children: React.ReactNode }} props
  */
 export const WebRTCProvider = ({ children }) => {
+  // Destructures state and functions from the authentication and chat contexts.
   const { socket, authUser } = useContext(AuthContext);
   const { selectedConversation } = useContext(ChatContext);
 
+  // State for the current status of the call ('idle', 'outgoing', 'incoming', 'connected').
   const [callStatus, setCallStatus] = useState("idle");
+  // State to hold data about the current call, like who is being called or who is calling.
   const [callData, setCallData] = useState(null);
+  // State for the local user's media stream (video and/or audio).
   const [localStream, setLocalStream] = useState(null);
+  // State for the remote user's media stream.
   const [remoteStream, setRemoteStream] = useState(null);
+  // State to track if the local user's microphone is muted.
   const [isMuted, setIsMuted] = useState(false);
+  // State to track if the local user's camera is turned off.
   const [isCameraOff, setIsCameraOff] = useState(false);
 
+  // Reference to the RTCPeerConnection instance.
   const peerConnectionRef = useRef(null);
+  // Reference to the local media stream to access it directly without causing re-renders.
   const localStreamRef = useRef(null);
+  // References to the audio elements for call sounds.
   const outgoingSound = useRef(new Audio("/ringing_outgoing.mp3"));
   const incomingSound = useRef(new Audio("/ringing_incoming.mp3"));
+  // Reference to the timeout for unanswered calls.
   const callTimeoutRef = useRef(null);
+  // Reference to the latest call state to prevent stale state in socket handlers.
   const callStateRef = useRef();
 
+  // Effect to keep the call state reference updated.
   useEffect(() => {
     callStateRef.current = { callStatus, callData };
   }, [callStatus, callData]);
 
+  // Effect to set the loop property on audio elements once on mount.
   useEffect(() => {
     outgoingSound.current.loop = true;
     incomingSound.current.loop = true;
   }, []);
 
+  // Centralized effect to manage playing and stopping call sounds based on call status.
   useEffect(() => {
     if (callStatus === "outgoing") {
       incomingSound.current.pause();
@@ -69,6 +88,7 @@ export const WebRTCProvider = ({ children }) => {
       incomingSound.current.currentTime = 0;
       incomingSound.current.play().catch(console.error);
     } else {
+      // For 'connected', 'idle', or any other status, stop all sounds.
       outgoingSound.current.pause();
       outgoingSound.current.currentTime = 0;
       incomingSound.current.pause();
@@ -76,10 +96,15 @@ export const WebRTCProvider = ({ children }) => {
     }
   }, [callStatus]);
 
+  // Effect to keep the local stream reference updated.
   useEffect(() => {
     localStreamRef.current = localStream;
   }, [localStream]);
 
+  /**
+   * Resets all call-related state and cleans up resources.
+   * This is used when a call ends, is rejected, or times out.
+   */
   const cleanupCall = useCallback(() => {
     if (callTimeoutRef.current) {
       clearTimeout(callTimeoutRef.current);
@@ -102,6 +127,11 @@ export const WebRTCProvider = ({ children }) => {
     setIsCameraOff(false);
   }, []);
 
+  /**
+   * Requests access to the user's camera and/or microphone.
+   * @param {MediaStreamConstraints} constraints - Specifies whether to request video, audio, or both.
+   * @returns {Promise<MediaStream|null>} The user's media stream on success, or null on failure.
+   */
   const getMedia = useCallback(async (constraints) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -115,10 +145,16 @@ export const WebRTCProvider = ({ children }) => {
     }
   }, []);
 
+  /**
+   * Creates and configures a new RTCPeerConnection object.
+   * @param {string} remoteUserId - The ID of the user to connect with.
+   * @returns {RTCPeerConnection} The configured peer connection instance.
+   */
   const createPeerConnection = useCallback(
     (remoteUserId) => {
       const peerConnection = new RTCPeerConnection(ICE_SERVERS);
 
+      // Event handler for when an ICE candidate is generated.
       peerConnection.onicecandidate = (event) => {
         if (event.candidate && socket) {
           socket.emit("ice-candidate", {
@@ -128,28 +164,31 @@ export const WebRTCProvider = ({ children }) => {
         }
       };
 
+      // Event handler for when a remote stream is added.
       peerConnection.ontrack = (event) => {
         setRemoteStream(event.streams[0]);
       };
 
-      // Using the modern `onconnectionstatechange` for monitoring.
-      peerConnection.onconnectionstatechange = () => {
-        const state = peerConnectionRef.current?.connectionState;
+      // Event handler for changes in the ICE connection state.
+      peerConnection.oniceconnectionstatechange = () => {
         if (
-          state === "failed" ||
-          state === "closed" ||
-          state === "disconnected"
+          peerConnectionRef.current?.iceConnectionState === "disconnected" ||
+          peerConnectionRef.current?.iceConnectionState === "closed"
         ) {
-          // For now, we just end the call if it disconnects, to simplify debugging.
+          toast.error("Call disconnected.");
           cleanupCall();
         }
       };
-
       return peerConnection;
     },
     [socket, cleanupCall]
   );
 
+  /**
+   * Initiates a call to another user.
+   * @param {string} userIdToCall - The ID of the user to call.
+   * @param {boolean} isVideoCall - True for a video call, false for an audio call.
+   */
   const callUser = useCallback(
     async (userIdToCall, isVideoCall) => {
       if (!userIdToCall || !socket || !selectedConversation) return;
@@ -179,6 +218,7 @@ export const WebRTCProvider = ({ children }) => {
           isVideo: isVideoCall,
         });
 
+        // Set a timeout to end the call if it's not answered within 30 seconds.
         callTimeoutRef.current = setTimeout(() => {
           socket.emit("call-timeout", { to: userIdToCall });
           toast.error(`${userToCall.fullName} did not answer.`);
@@ -191,6 +231,9 @@ export const WebRTCProvider = ({ children }) => {
     [selectedConversation, socket, getMedia, createPeerConnection, cleanupCall]
   );
 
+  /**
+   * Rejects an incoming call.
+   */
   const rejectCall = useCallback(() => {
     if (callData?.from && socket) {
       socket.emit("reject-call", { to: callData.from });
@@ -198,6 +241,9 @@ export const WebRTCProvider = ({ children }) => {
     cleanupCall();
   }, [callData, socket, cleanupCall]);
 
+  /**
+   * Answers an incoming call.
+   */
   const answerCall = useCallback(async () => {
     if (!callData?.offer || !socket) return;
     const stream = await getMedia({ video: callData.isVideo, audio: true });
@@ -211,9 +257,7 @@ export const WebRTCProvider = ({ children }) => {
       .getTracks()
       .forEach((track) => peerConnectionRef.current.addTrack(track, stream));
     try {
-      await peerConnectionRef.current.setRemoteDescription(
-        new RTCSessionDescription(callData.offer)
-      );
+      await peerConnectionRef.current.setRemoteDescription(callData.offer);
       const answer = await peerConnectionRef.current.createAnswer();
       await peerConnectionRef.current.setLocalDescription(answer);
       setCallStatus("connected");
@@ -230,6 +274,9 @@ export const WebRTCProvider = ({ children }) => {
     rejectCall,
   ]);
 
+  /**
+   * Ends the current call.
+   */
   const endCall = useCallback(() => {
     const remoteUserId = callData?.to?._id || callData?.from;
     if (remoteUserId && socket) {
@@ -238,6 +285,9 @@ export const WebRTCProvider = ({ children }) => {
     cleanupCall();
   }, [callData, socket, cleanupCall]);
 
+  /**
+   * Toggles the microphone on and off.
+   */
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
     localStreamRef.current
@@ -246,6 +296,9 @@ export const WebRTCProvider = ({ children }) => {
     setIsMuted((previous) => !previous);
   }, []);
 
+  /**
+   * Toggles the camera on and off.
+   */
   const toggleCamera = useCallback(() => {
     if (!localStreamRef.current) return;
     localStreamRef.current
@@ -254,6 +307,7 @@ export const WebRTCProvider = ({ children }) => {
     setIsCameraOff((previous) => !previous);
   }, []);
 
+  // Main effect for handling all real-time WebRTC signaling events via sockets.
   useEffect(() => {
     if (!socket) return;
 
@@ -261,30 +315,16 @@ export const WebRTCProvider = ({ children }) => {
       setCallData({ ...data });
       setCallStatus("incoming");
     };
-
-    // THIS IS THE FUNCTION WE ARE DEBUGGING
     const handleAnswerMade = async (data) => {
-      // 🔍 DEBUGGING STEP 1: Check if the signal is arriving from the server.
-      console.log("✅ Received 'answer-made' signal from server:", data);
-
       if (callTimeoutRef.current) {
         clearTimeout(callTimeoutRef.current);
         callTimeoutRef.current = null;
       }
       if (peerConnectionRef.current) {
-        // 🔍 DEBUGGING STEP 2: Check for errors during the WebRTC negotiation.
-        try {
-          await peerConnectionRef.current.setRemoteDescription(
-            new RTCSessionDescription(data.answer)
-          );
-          console.log("✅ Successfully set remote description.");
-          setCallStatus("connected");
-        } catch (error) {
-          console.error("❌ Failed to set remote description:", error);
-        }
+        await peerConnectionRef.current.setRemoteDescription(data.answer);
+        setCallStatus("connected");
       }
     };
-
     const handleIceCandidateReceived = (data) => {
       if (peerConnectionRef.current && data.candidate) {
         peerConnectionRef.current.addIceCandidate(
@@ -292,13 +332,11 @@ export const WebRTCProvider = ({ children }) => {
         );
       }
     };
-
     const handleMissedCall = (data) => {
       cleanupCall();
       const callerName = data?.callerName || "Someone";
       toast.error(`Missed call from ${callerName}`);
     };
-
     const handleUserDisconnected = ({ userId }) => {
       const { callStatus, callData } = callStateRef.current;
       if (callStatus === "outgoing" && callData?.to?._id === userId) {
@@ -315,6 +353,7 @@ export const WebRTCProvider = ({ children }) => {
       }
     };
 
+    // Register all socket event listeners.
     socket.on("call-made", handleCallMade);
     socket.on("answer-made", handleAnswerMade);
     socket.on("ice-candidate-received", handleIceCandidateReceived);
@@ -323,6 +362,7 @@ export const WebRTCProvider = ({ children }) => {
     socket.on("call-missed", handleMissedCall);
     socket.on("user-disconnected", handleUserDisconnected);
 
+    // Cleanup function to remove listeners on unmount.
     return () => {
       socket.off("call-made", handleCallMade);
       socket.off("answer-made", handleAnswerMade);
@@ -334,6 +374,7 @@ export const WebRTCProvider = ({ children }) => {
     };
   }, [socket, cleanupCall]);
 
+  // Memoize the context value to prevent unnecessary re-renders of consumer components.
   const value = useMemo(
     () => ({
       callStatus,
