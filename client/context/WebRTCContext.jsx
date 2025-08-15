@@ -10,6 +10,8 @@ import React, {
 import toast from "react-hot-toast";
 import { AuthContext } from "./AuthContext";
 import { ChatContext } from "./ChatContext";
+import ringingOutgoingSound from "/ringing_outgoing.mp3";
+import ringingIncomingSound from "/ringing_incoming.mp3";
 
 export const WebRTCContext = createContext();
 
@@ -31,24 +33,30 @@ export const WebRTCProvider = ({ children }) => {
   const { socket } = useContext(AuthContext);
   const { selectedConversation } = useContext(ChatContext);
 
-  const [callStatus, setCallStatus] = useState("idle");
+  // State Management
+  const [callStatus, setCallStatus] = useState("idle"); // idle, outgoing, incoming, connected
   const [callData, setCallData] = useState(null);
   const [localStream, setLocalStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
 
+  // Refs for stability
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
-  const outgoingSound = useRef(new Audio("/ringing_outgoing.mp3"));
-  const incomingSound = useRef(new Audio("/ringing_incoming.mp3"));
   const callTimeoutRef = useRef(null);
-  const callStateRef = useRef();
+  const callStateRef = useRef(); // Ref to hold current state to avoid stale closures
 
+  // Audio refs
+  const outgoingSound = useRef(new Audio(ringingOutgoingSound));
+  const incomingSound = useRef(new Audio(ringingIncomingSound));
+
+  // Keep a ref to the latest state for use in callbacks
   useEffect(() => {
-    callStateRef.current = { callStatus, callData };
-  }, [callStatus, callData]);
+    callStateRef.current = { callStatus, callData, localStream };
+  }, [callStatus, callData, localStream]);
 
+  // Setup looping for ringing sounds
   useEffect(() => {
     outgoingSound.current.loop = true;
     incomingSound.current.loop = true;
@@ -56,41 +64,54 @@ export const WebRTCProvider = ({ children }) => {
 
   // Effect to manage ringing sounds based on call status
   useEffect(() => {
+    const playSound = (sound) => {
+      sound.currentTime = 0;
+      sound.play().catch((err) => console.error("Error playing sound:", err));
+    };
+    const stopSound = (sound) => {
+      sound.pause();
+      sound.currentTime = 0;
+    };
+
     if (callStatus === "outgoing") {
-      incomingSound.current.pause();
-      outgoingSound.current.currentTime = 0;
-      outgoingSound.current.play().catch(console.error);
+      stopSound(incomingSound.current);
+      playSound(outgoingSound.current);
     } else if (callStatus === "incoming") {
-      outgoingSound.current.pause();
-      incomingSound.current.currentTime = 0;
-      incomingSound.current.play().catch(console.error);
+      stopSound(outgoingSound.current);
+      playSound(incomingSound.current);
     } else {
       // For "idle", "connected", etc., stop all sounds
-      outgoingSound.current.pause();
-      outgoingSound.current.currentTime = 0;
-      incomingSound.current.pause();
-      incomingSound.current.currentTime = 0;
+      stopSound(outgoingSound.current);
+      stopSound(incomingSound.current);
     }
   }, [callStatus]);
 
+  // Keep localStreamRef updated
   useEffect(() => {
     localStreamRef.current = localStream;
   }, [localStream]);
 
-  // Centralized function to clean up all call-related state and objects
+  /**
+   * The single source of truth for cleaning up a call.
+   * This function is now robust and ensures all states, streams, and connections are reset.
+   */
   const cleanupCall = useCallback(() => {
+    console.log("Cleaning up call state...");
     if (callTimeoutRef.current) {
       clearTimeout(callTimeoutRef.current);
       callTimeoutRef.current = null;
     }
     if (peerConnectionRef.current) {
+      peerConnectionRef.current.onicecandidate = null;
+      peerConnectionRef.current.ontrack = null;
+      peerConnectionRef.current.onconnectionstatechange = null;
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
     }
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
     }
-    localStreamRef.current = null;
     setLocalStream(null);
     setRemoteStream(null);
     setCallStatus("idle");
@@ -100,45 +121,31 @@ export const WebRTCProvider = ({ children }) => {
   }, []);
 
   // Function to get user's media stream
-  const getMedia = useCallback(async (constraints) => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      setLocalStream(stream);
-      setIsCameraOff(!constraints.video);
-      setIsMuted(false);
-      return stream;
-    } catch (error) {
-      toast.error("Could not access camera/microphone.");
-      return null;
-    }
-  }, []);
-
-  // Function to handle automatic reconnection on network drops using ICE restart
-  const reconnectCall = useCallback(async () => {
-    if (!peerConnectionRef.current) return;
-    try {
-      const offer = await peerConnectionRef.current.createOffer({
-        iceRestart: true,
-      });
-      await peerConnectionRef.current.setLocalDescription(offer);
-      const remoteUserId =
-        callStateRef.current.callData?.to?._id ||
-        callStateRef.current.callData?.from;
-      if (remoteUserId && socket) {
-        socket.emit("renegotiate-call", { to: remoteUserId, offer });
+  const getMedia = useCallback(
+    async (constraints) => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        setLocalStream(stream);
+        setIsCameraOff(!constraints.video);
+        return stream;
+      } catch (error) {
+        toast.error("Could not access camera/microphone.");
+        cleanupCall(); // Cleanup if media access fails
+        return null;
       }
-    } catch (error) {
-      console.error("ICE Restart failed:", error);
-      cleanupCall();
-    }
-  }, [socket, cleanupCall]);
+    },
+    [cleanupCall]
+  );
 
-  // Function to create and configure the RTCPeerConnection object
+  /**
+   * Creates and configures the RTCPeerConnection object.
+   * This is the core of the WebRTC communication.
+   */
   const createPeerConnection = useCallback(
     (remoteUserId) => {
-      const peerConnection = new RTCPeerConnection(ICE_SERVERS);
+      const pc = new RTCPeerConnection(ICE_SERVERS);
 
-      peerConnection.onicecandidate = (event) => {
+      pc.onicecandidate = (event) => {
         if (event.candidate && socket) {
           socket.emit("ice-candidate", {
             to: remoteUserId,
@@ -147,157 +154,176 @@ export const WebRTCProvider = ({ children }) => {
         }
       };
 
-      peerConnection.ontrack = (event) => {
+      pc.ontrack = (event) => {
+        // When the remote user's stream is received, update the state.
         setRemoteStream(event.streams[0]);
       };
 
-      // Using onconnectionstatechange for more reliable connection monitoring
-      peerConnection.onconnectionstatechange = () => {
-        const state = peerConnectionRef.current?.connectionState;
-        if (state === "disconnected") {
-          toast.error("Connection lost. Attempting to reconnect...");
-          reconnectCall();
-        }
-        if (state === "failed" || state === "closed") {
+      pc.onconnectionstatechange = () => {
+        const state = pc.connectionState;
+        console.log("Connection state change:", state);
+        // If connection fails or closes, perform a full cleanup.
+        if (
+          state === "failed" ||
+          state === "closed" ||
+          state === "disconnected"
+        ) {
+          toast.error("Call disconnected.");
           cleanupCall();
         }
       };
 
-      return peerConnection;
+      return pc;
     },
-    [socket, cleanupCall, reconnectCall]
+    [socket, cleanupCall]
   );
 
   // Function to initiate a call to another user
   const callUser = useCallback(
     async (userIdToCall, isVideoCall) => {
-      if (!userIdToCall || !socket || !selectedConversation) return;
+      if (!socket || !selectedConversation) return;
+
       const userToCall = selectedConversation.participants.find(
         (p) => p._id === userIdToCall
       );
       if (!userToCall) return;
 
-      cleanupCall();
+      cleanupCall(); // Start with a clean state
       const stream = await getMedia({ video: isVideoCall, audio: true });
       if (!stream) return;
 
-      peerConnectionRef.current = createPeerConnection(userIdToCall);
-      stream
-        .getTracks()
-        .forEach((track) => peerConnectionRef.current.addTrack(track, stream));
+      const remoteUserId = userToCall._id;
+      peerConnectionRef.current = createPeerConnection(remoteUserId);
+      stream.getTracks().forEach((track) => {
+        peerConnectionRef.current.addTrack(track, stream);
+      });
 
       try {
         const offer = await peerConnectionRef.current.createOffer();
         await peerConnectionRef.current.setLocalDescription(offer);
+
         setCallData({ to: userToCall, isVideo: isVideoCall });
         setCallStatus("outgoing");
+
         socket.emit("call-user", {
-          to: userIdToCall,
+          to: remoteUserId,
           offer,
           isVideo: isVideoCall,
         });
 
-        // Set a timeout for the call
+        // Set a 30-second timeout for the call
         callTimeoutRef.current = setTimeout(() => {
-          socket.emit("call-timeout", { to: userIdToCall });
           toast.error(`${userToCall.fullName} did not answer.`);
-          cleanupCall();
+          endCall(); // Use endCall to notify the other user
         }, 30000);
       } catch (error) {
+        console.error("Error creating call offer:", error);
         cleanupCall();
       }
     },
-    [selectedConversation, socket, getMedia, createPeerConnection, cleanupCall]
+    [socket, selectedConversation, cleanupCall, getMedia, createPeerConnection]
   );
-
-  // Function to reject an incoming call
-  const rejectCall = useCallback(() => {
-    if (callData?.from && socket) {
-      socket.emit("reject-call", { to: callData.from });
-    }
-    cleanupCall();
-  }, [callData, socket, cleanupCall]);
 
   // Function to answer an incoming call
   const answerCall = useCallback(async () => {
-    if (!callData?.offer || !socket) return;
+    const {
+      from: remoteUserId,
+      offer,
+      isVideo,
+    } = callStateRef.current.callData;
+    if (!offer || !socket || !remoteUserId) return;
 
-    // ✅ FIXED: Immediately notify the caller that the call has been answered.
-    // This allows the caller's UI to update to "Connected" instantly.
-    socket.emit("call-answered", { to: callData.from });
+    // Immediately notify the caller that the call is being answered.
+    socket.emit("call-answered", { to: remoteUserId });
+    setCallStatus("connected"); // Update local UI instantly
 
-    const stream = await getMedia({ video: callData.isVideo, audio: true });
+    const stream = await getMedia({ video: isVideo, audio: true });
     if (!stream) {
       rejectCall();
       return;
     }
 
-    // The rest of the connection setup happens in the background.
-    setCallStatus("connected");
-
-    peerConnectionRef.current = createPeerConnection(callData.from);
+    peerConnectionRef.current = createPeerConnection(remoteUserId);
     stream
       .getTracks()
       .forEach((track) => peerConnectionRef.current.addTrack(track, stream));
+
     try {
       await peerConnectionRef.current.setRemoteDescription(
-        new RTCSessionDescription(callData.offer)
+        new RTCSessionDescription(offer)
       );
       const answer = await peerConnectionRef.current.createAnswer();
       await peerConnectionRef.current.setLocalDescription(answer);
 
-      // Send the technical answer payload to establish the media stream.
-      socket.emit("make-answer", { to: callData.from, answer });
+      // Send the technical answer to establish the P2P connection
+      socket.emit("make-answer", { to: remoteUserId, answer });
     } catch (error) {
+      console.error("Error answering call:", error);
       cleanupCall();
     }
-  }, [
-    callData,
-    socket,
-    getMedia,
-    createPeerConnection,
-    cleanupCall,
-    rejectCall,
-  ]);
+  }, [socket, getMedia, createPeerConnection, cleanupCall]);
 
-  // Function to end an ongoing call
+  /**
+   * Ends the call and notifies the other user.
+   * This is used for hanging up, timeouts, or rejections.
+   */
   const endCall = useCallback(() => {
-    const remoteUserId = callData?.to?._id || callData?.from;
-    if (remoteUserId && socket) {
-      socket.emit("end-call", { to: remoteUserId });
+    const { callData } = callStateRef.current;
+    if (callData) {
+      // Determine the remote user's ID whether we are the caller or receiver
+      const remoteUserId = callData.to?._id || callData.from;
+      if (remoteUserId && socket) {
+        socket.emit("end-call", { to: remoteUserId });
+      }
     }
     cleanupCall();
-  }, [callData, socket, cleanupCall]);
+  }, [socket, cleanupCall]);
+
+  const rejectCall = useCallback(() => {
+    const { from: remoteUserId } = callStateRef.current.callData;
+    if (remoteUserId && socket) {
+      socket.emit("reject-call", { to: remoteUserId });
+    }
+    cleanupCall();
+  }, [socket, cleanupCall]);
 
   // Function to toggle microphone mute status
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
-    localStreamRef.current
-      .getAudioTracks()
-      .forEach((track) => (track.enabled = !track.enabled));
-    setIsMuted((previous) => !previous);
-  }, []);
+    const enabled = !isMuted;
+    localStreamRef.current.getAudioTracks().forEach((track) => {
+      track.enabled = enabled;
+    });
+    setIsMuted(!enabled);
+  }, [isMuted]);
 
   // Function to toggle camera on/off status
   const toggleCamera = useCallback(() => {
     if (!localStreamRef.current) return;
-    localStreamRef.current
-      .getVideoTracks()
-      .forEach((track) => (track.enabled = !track.enabled));
-    setIsCameraOff((previous) => !previous);
-  }, []);
+    const enabled = !isCameraOff;
+    localStreamRef.current.getVideoTracks().forEach((track) => {
+      track.enabled = enabled;
+    });
+    setIsCameraOff(!enabled);
+  }, [isCameraOff]);
 
   // Main useEffect for handling all socket events
   useEffect(() => {
     if (!socket) return;
 
     const handleCallMade = (data) => {
-      setCallData({ ...data });
-      setCallStatus("incoming");
+      // Only accept a call if we are idle
+      if (callStateRef.current.callStatus === "idle") {
+        setCallData(data);
+        setCallStatus("incoming");
+      } else {
+        // If busy, automatically reject the new call
+        socket.emit("reject-call", { to: data.from });
+      }
     };
 
-    // ✅ FIXED: This new handler updates the UI to "Connected" immediately.
     const handleCallAccepted = () => {
+      // The receiver has answered, clear the timeout and update UI
       if (callTimeoutRef.current) {
         clearTimeout(callTimeoutRef.current);
         callTimeoutRef.current = null;
@@ -305,87 +331,63 @@ export const WebRTCProvider = ({ children }) => {
       setCallStatus("connected");
     };
 
-    // This handler now only deals with the technical WebRTC answer.
     const handleAnswerMade = async (data) => {
-      if (peerConnectionRef.current) {
-        await peerConnectionRef.current.setRemoteDescription(
-          new RTCSessionDescription(data.answer)
-        );
+      if (
+        peerConnectionRef.current &&
+        peerConnectionRef.current.signalingState !== "closed"
+      ) {
+        try {
+          await peerConnectionRef.current.setRemoteDescription(
+            new RTCSessionDescription(data.answer)
+          );
+        } catch (error) {
+          console.error("Error setting remote description:", error);
+        }
       }
     };
 
     const handleIceCandidateReceived = (data) => {
       if (peerConnectionRef.current && data.candidate) {
-        peerConnectionRef.current.addIceCandidate(
-          new RTCIceCandidate(data.candidate)
-        );
+        try {
+          peerConnectionRef.current.addIceCandidate(
+            new RTCIceCandidate(data.candidate)
+          );
+        } catch (error) {
+          console.error("Error adding ICE candidate:", error);
+        }
       }
-    };
-
-    const handleMissedCall = (data) => {
-      cleanupCall();
-      const callerName = data?.callerName || "Someone";
-      toast.error(`Missed call from ${callerName}`);
     };
 
     const handleUserDisconnected = ({ userId }) => {
       const { callStatus, callData } = callStateRef.current;
-      if (
-        (callStatus === "outgoing" && callData?.to?._id === userId) ||
-        (callStatus === "incoming" && callData?.from === userId) ||
-        (callStatus === "connected" &&
-          (callData?.to?._id === userId || callData?.from === userId))
-      ) {
+      const remoteUserId = callData?.to?._id || callData?.from;
+      if (callStatus !== "idle" && remoteUserId === userId) {
         toast.error("The other user disconnected.");
         cleanupCall();
       }
     };
 
-    // Handlers for the ICE Restart (renegotiation) process.
-    const handleRenegotiateCall = async (data) => {
-      if (peerConnectionRef.current && data.offer) {
-        await peerConnectionRef.current.setRemoteDescription(
-          new RTCSessionDescription(data.offer)
-        );
-        const answer = await peerConnectionRef.current.createAnswer();
-        await peerConnectionRef.current.setLocalDescription(answer);
-        socket.emit("renegotiate-answer", { to: data.from, answer });
-      }
-    };
-    const handleRenegotiateAnswer = async (data) => {
-      if (peerConnectionRef.current && data.answer) {
-        await peerConnectionRef.current.setRemoteDescription(
-          new RTCSessionDescription(data.answer)
-        );
-      }
-    };
-
+    // All listeners
     socket.on("call-made", handleCallMade);
-    socket.on("call-accepted", handleCallAccepted); // ✅ FIXED: Listen for the new event
+    socket.on("call-accepted", handleCallAccepted);
     socket.on("answer-made", handleAnswerMade);
     socket.on("ice-candidate-received", handleIceCandidateReceived);
     socket.on("call-rejected", cleanupCall);
-    socket.on("call-ended", cleanupCall);
-    socket.on("call-missed", handleMissedCall);
+    socket.on("call-ended", cleanupCall); // The most important one for fixing ghost ringing
     socket.on("user-disconnected", handleUserDisconnected);
-    socket.on("renegotiate-call", handleRenegotiateCall);
-    socket.on("renegotiate-answer", handleRenegotiateAnswer);
 
     return () => {
+      // Cleanup all listeners
       socket.off("call-made", handleCallMade);
-      socket.off("call-accepted", handleCallAccepted); // ✅ FIXED: Clean up the listener
+      socket.off("call-accepted", handleCallAccepted);
       socket.off("answer-made", handleAnswerMade);
       socket.off("ice-candidate-received", handleIceCandidateReceived);
       socket.off("call-rejected", cleanupCall);
       socket.off("call-ended", cleanupCall);
-      socket.off("call-missed", handleMissedCall);
       socket.off("user-disconnected", handleUserDisconnected);
-      socket.off("renegotiate-call", handleRenegotiateCall);
-      socket.off("renegotiate-answer", handleRenegotiateAnswer);
     };
   }, [socket, cleanupCall]);
 
-  // Memoized context value to prevent unnecessary re-renders
   const value = useMemo(
     () => ({
       callStatus,
