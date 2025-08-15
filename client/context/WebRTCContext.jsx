@@ -10,6 +10,8 @@ import React, {
 import toast from "react-hot-toast";
 import { AuthContext } from "./AuthContext";
 import { ChatContext } from "./ChatContext";
+import ringingOutgoingSound from "/ringing_outgoing.mp3";
+import ringingIncomingSound from "/ringing_incoming.mp3";
 
 export const WebRTCContext = createContext();
 
@@ -40,8 +42,8 @@ export const WebRTCProvider = ({ children }) => {
 
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
-  const outgoingSound = useRef(new Audio("/ringing_outgoing.mp3"));
-  const incomingSound = useRef(new Audio("/ringing_incoming.mp3"));
+  const outgoingSound = useRef(new Audio(ringingOutgoingSound));
+  const incomingSound = useRef(new Audio(ringingIncomingSound));
   const callTimeoutRef = useRef(null);
   const callStateRef = useRef();
 
