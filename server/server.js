@@ -115,6 +115,16 @@ io.on("connection", async (socket) => {
     }
   });
 
+  // ✅ ADD THIS: Relays the answered signal to the original caller.
+  socket.on("call-answered", (data) => {
+    const { to } = data;
+    const receiverSocketId = userSocketMap[to];
+    if (receiverSocketId) {
+      // Emit 'call-accepted' back to the caller to update their UI instantly.
+      socket.to(receiverSocketId).emit("call-accepted");
+    }
+  });
+
   // 📝 Listen for 'ice-candidate' to exchange network candidates for WebRTC connection.
   socket.on("ice-candidate", (data) => {
     const { to, candidate } = data;

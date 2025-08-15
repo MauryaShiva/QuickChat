@@ -10,13 +10,11 @@ import React, {
 import toast from "react-hot-toast";
 import { AuthContext } from "./AuthContext";
 import { ChatContext } from "./ChatContext";
-import ringingOutgoingSound from "/ringing_outgoing.mp3";
-import ringingIncomingSound from "/ringing_incoming.mp3";
 
 export const WebRTCContext = createContext();
 
-// 🛡️ UPDATED: A more robust ICE configuration for better reliability.
-// The `turns:` entry is excellent for bypassing restrictive firewalls.
+// A robust ICE configuration for better reliability, including TURN servers
+// to bypass restrictive firewalls.
 const ICE_SERVERS = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
@@ -30,7 +28,7 @@ const ICE_SERVERS = {
 };
 
 export const WebRTCProvider = ({ children }) => {
-  const { socket, authUser } = useContext(AuthContext);
+  const { socket } = useContext(AuthContext);
   const { selectedConversation } = useContext(ChatContext);
 
   const [callStatus, setCallStatus] = useState("idle");
@@ -42,8 +40,8 @@ export const WebRTCProvider = ({ children }) => {
 
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
-  const outgoingSound = useRef(new Audio(ringingOutgoingSound));
-  const incomingSound = useRef(new Audio(ringingIncomingSound));
+  const outgoingSound = useRef(new Audio("/ringing_outgoing.mp3"));
+  const incomingSound = useRef(new Audio("/ringing_incoming.mp3"));
   const callTimeoutRef = useRef(null);
   const callStateRef = useRef();
 
@@ -56,6 +54,7 @@ export const WebRTCProvider = ({ children }) => {
     incomingSound.current.loop = true;
   }, []);
 
+  // Effect to manage ringing sounds based on call status
   useEffect(() => {
     if (callStatus === "outgoing") {
       incomingSound.current.pause();
@@ -66,6 +65,7 @@ export const WebRTCProvider = ({ children }) => {
       incomingSound.current.currentTime = 0;
       incomingSound.current.play().catch(console.error);
     } else {
+      // For "idle", "connected", etc., stop all sounds
       outgoingSound.current.pause();
       outgoingSound.current.currentTime = 0;
       incomingSound.current.pause();
@@ -77,6 +77,7 @@ export const WebRTCProvider = ({ children }) => {
     localStreamRef.current = localStream;
   }, [localStream]);
 
+  // Centralized function to clean up all call-related state and objects
   const cleanupCall = useCallback(() => {
     if (callTimeoutRef.current) {
       clearTimeout(callTimeoutRef.current);
@@ -98,6 +99,7 @@ export const WebRTCProvider = ({ children }) => {
     setIsCameraOff(false);
   }, []);
 
+  // Function to get user's media stream
   const getMedia = useCallback(async (constraints) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -111,7 +113,7 @@ export const WebRTCProvider = ({ children }) => {
     }
   }, []);
 
-  // ✨ NEW: Function to handle automatic reconnection on network drops.
+  // Function to handle automatic reconnection on network drops using ICE restart
   const reconnectCall = useCallback(async () => {
     if (!peerConnectionRef.current) return;
     try {
@@ -131,6 +133,7 @@ export const WebRTCProvider = ({ children }) => {
     }
   }, [socket, cleanupCall]);
 
+  // Function to create and configure the RTCPeerConnection object
   const createPeerConnection = useCallback(
     (remoteUserId) => {
       const peerConnection = new RTCPeerConnection(ICE_SERVERS);
@@ -148,7 +151,7 @@ export const WebRTCProvider = ({ children }) => {
         setRemoteStream(event.streams[0]);
       };
 
-      // ✨ UPDATED: Using the more reliable `onconnectionstatechange` for monitoring.
+      // Using onconnectionstatechange for more reliable connection monitoring
       peerConnection.onconnectionstatechange = () => {
         const state = peerConnectionRef.current?.connectionState;
         if (state === "disconnected") {
@@ -165,6 +168,7 @@ export const WebRTCProvider = ({ children }) => {
     [socket, cleanupCall, reconnectCall]
   );
 
+  // Function to initiate a call to another user
   const callUser = useCallback(
     async (userIdToCall, isVideoCall) => {
       if (!userIdToCall || !socket || !selectedConversation) return;
@@ -193,6 +197,7 @@ export const WebRTCProvider = ({ children }) => {
           isVideo: isVideoCall,
         });
 
+        // Set a timeout for the call
         callTimeoutRef.current = setTimeout(() => {
           socket.emit("call-timeout", { to: userIdToCall });
           toast.error(`${userToCall.fullName} did not answer.`);
@@ -205,6 +210,7 @@ export const WebRTCProvider = ({ children }) => {
     [selectedConversation, socket, getMedia, createPeerConnection, cleanupCall]
   );
 
+  // Function to reject an incoming call
   const rejectCall = useCallback(() => {
     if (callData?.from && socket) {
       socket.emit("reject-call", { to: callData.from });
@@ -212,26 +218,35 @@ export const WebRTCProvider = ({ children }) => {
     cleanupCall();
   }, [callData, socket, cleanupCall]);
 
+  // Function to answer an incoming call
   const answerCall = useCallback(async () => {
     if (!callData?.offer || !socket) return;
+
+    // ✅ FIXED: Immediately notify the caller that the call has been answered.
+    // This allows the caller's UI to update to "Connected" instantly.
+    socket.emit("call-answered", { to: callData.from });
+
     const stream = await getMedia({ video: callData.isVideo, audio: true });
     if (!stream) {
       rejectCall();
       return;
     }
 
+    // The rest of the connection setup happens in the background.
+    setCallStatus("connected");
+
     peerConnectionRef.current = createPeerConnection(callData.from);
     stream
       .getTracks()
       .forEach((track) => peerConnectionRef.current.addTrack(track, stream));
     try {
-      // ✅ CORRECTED: Wrap offer in RTCSessionDescription for best practice.
       await peerConnectionRef.current.setRemoteDescription(
         new RTCSessionDescription(callData.offer)
       );
       const answer = await peerConnectionRef.current.createAnswer();
       await peerConnectionRef.current.setLocalDescription(answer);
-      setCallStatus("connected");
+
+      // Send the technical answer payload to establish the media stream.
       socket.emit("make-answer", { to: callData.from, answer });
     } catch (error) {
       cleanupCall();
@@ -245,6 +260,7 @@ export const WebRTCProvider = ({ children }) => {
     rejectCall,
   ]);
 
+  // Function to end an ongoing call
   const endCall = useCallback(() => {
     const remoteUserId = callData?.to?._id || callData?.from;
     if (remoteUserId && socket) {
@@ -253,6 +269,7 @@ export const WebRTCProvider = ({ children }) => {
     cleanupCall();
   }, [callData, socket, cleanupCall]);
 
+  // Function to toggle microphone mute status
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
     localStreamRef.current
@@ -261,6 +278,7 @@ export const WebRTCProvider = ({ children }) => {
     setIsMuted((previous) => !previous);
   }, []);
 
+  // Function to toggle camera on/off status
   const toggleCamera = useCallback(() => {
     if (!localStreamRef.current) return;
     localStreamRef.current
@@ -269,6 +287,7 @@ export const WebRTCProvider = ({ children }) => {
     setIsCameraOff((previous) => !previous);
   }, []);
 
+  // Main useEffect for handling all socket events
   useEffect(() => {
     if (!socket) return;
 
@@ -277,18 +296,21 @@ export const WebRTCProvider = ({ children }) => {
       setCallStatus("incoming");
     };
 
-    // ✅ CORRECTED: This function is now correctly defined and structured.
-    const handleAnswerMade = async (data) => {
+    // ✅ FIXED: This new handler updates the UI to "Connected" immediately.
+    const handleCallAccepted = () => {
       if (callTimeoutRef.current) {
         clearTimeout(callTimeoutRef.current);
         callTimeoutRef.current = null;
       }
+      setCallStatus("connected");
+    };
+
+    // This handler now only deals with the technical WebRTC answer.
+    const handleAnswerMade = async (data) => {
       if (peerConnectionRef.current) {
-        // Wrap answer in RTCSessionDescription for best practice.
         await peerConnectionRef.current.setRemoteDescription(
           new RTCSessionDescription(data.answer)
         );
-        setCallStatus("connected");
       }
     };
 
@@ -319,7 +341,7 @@ export const WebRTCProvider = ({ children }) => {
       }
     };
 
-    // ✨ NEW: Handlers for the ICE Restart (renegotiation) process.
+    // Handlers for the ICE Restart (renegotiation) process.
     const handleRenegotiateCall = async (data) => {
       if (peerConnectionRef.current && data.offer) {
         await peerConnectionRef.current.setRemoteDescription(
@@ -339,6 +361,7 @@ export const WebRTCProvider = ({ children }) => {
     };
 
     socket.on("call-made", handleCallMade);
+    socket.on("call-accepted", handleCallAccepted); // ✅ FIXED: Listen for the new event
     socket.on("answer-made", handleAnswerMade);
     socket.on("ice-candidate-received", handleIceCandidateReceived);
     socket.on("call-rejected", cleanupCall);
@@ -350,6 +373,7 @@ export const WebRTCProvider = ({ children }) => {
 
     return () => {
       socket.off("call-made", handleCallMade);
+      socket.off("call-accepted", handleCallAccepted); // ✅ FIXED: Clean up the listener
       socket.off("answer-made", handleAnswerMade);
       socket.off("ice-candidate-received", handleIceCandidateReceived);
       socket.off("call-rejected", cleanupCall);
@@ -361,6 +385,7 @@ export const WebRTCProvider = ({ children }) => {
     };
   }, [socket, cleanupCall]);
 
+  // Memoized context value to prevent unnecessary re-renders
   const value = useMemo(
     () => ({
       callStatus,
