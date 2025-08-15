@@ -156,6 +156,27 @@ io.on("connection", async (socket) => {
     }
   });
 
+  // ✨ NEW: Handler for when a client wants to renegotiate the connection (ICE Restart).
+  socket.on("renegotiate-call", ({ to, offer }) => {
+    const recipientSocketId = userSocketMap[to];
+    if (recipientSocketId) {
+      io.to(recipientSocketId).emit("renegotiate-call", {
+        from: userId,
+        offer,
+      });
+    }
+  });
+  // ✨ NEW: Handler for the answer to a renegotiation offer.
+  socket.on("renegotiate-answer", ({ to, answer }) => {
+    const recipientSocketId = userSocketMap[to];
+    if (recipientSocketId) {
+      io.to(recipientSocketId).emit("renegotiate-answer", {
+        from: userId,
+        answer,
+      });
+    }
+  });
+
   // 📝 Handle client disconnection.
   socket.on("disconnect", async () => {
     // 📌 Remove the user from the online users map and broadcast the updated list.
