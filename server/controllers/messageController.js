@@ -161,7 +161,7 @@ export const sendMessage = async (request, response) => {
           systemPrompt,
           ...formattedHistory, // Includes the user's most recent message.
         ],
-        model: "llama3-8b-8192",
+        model: "gemma2-9b-it",
         stream: true,
       });
 

@@ -25,7 +25,7 @@ export const generateBio = async (request, response) => {
     // Sends the request to the Groq AI chat completions API.
     const chatCompletion = await groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
-      model: "llama3-8b-8192",
+      model: "gemma2-9b-it",
     });
 
     // Extracts the generated bio text from the API response.
